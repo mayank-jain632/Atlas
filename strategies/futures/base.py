@@ -7,7 +7,7 @@ import pandas as pd
 from strategies.base import BaseStrategy
 from .uid import parse_futures_uid
 from .instruments import get_futures_instrument
-from .indicators import atr,normalize_ohlc
+from indicators import atr,normalize_ohlc
 
 class BaseFuturesStrategy(BaseStrategy,ABC):
     strategy_name="futures_base"

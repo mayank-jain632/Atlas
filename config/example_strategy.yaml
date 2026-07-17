@@ -1,0 +1,9 @@
+uid: ma_intervention_QQQ_1d_50_1
+strategy_type: ma_intervention
+capital: 100000
+enabled: true
+parameters:
+  symbol: QQQ
+  timeframe: 1d
+  ma_period: 50
+  allocation: 1.0

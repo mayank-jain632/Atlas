@@ -8,12 +8,14 @@ from strategies.base import BaseStrategy
 from .uid import parse_futures_uid
 from .instruments import get_futures_instrument
 from indicators import atr,normalize_ohlc
+from data.resample import raw_bars_needed,resample_ohlcv,to_pandas_rule
 
 class BaseFuturesStrategy(BaseStrategy,ABC):
     strategy_name="futures_base"
-    def __init__(self,uid,capital,db_path=None,timeframe="1d",allow_fractional_shares=False):
+    def __init__(self,uid,capital,db_path=None,timeframe="1d",source_timeframe=None,allow_fractional_shares=False):
         self.parameters=parse_futures_uid(uid);self.symbol=self.parameters["symbol"];self.instrument=get_futures_instrument(self.symbol);self.data_symbol=self.instrument.data_symbol;self.contracts=1
-        super().__init__(uid=uid,capital=capital,db_path=db_path,timeframe=timeframe,allow_fractional_shares=False);self.reset_futures_state()
+        self.bar_timeframe=str(timeframe);self.source_timeframe=str(source_timeframe) if source_timeframe else self.bar_timeframe;self.resampling=self.source_timeframe!=self.bar_timeframe
+        super().__init__(uid=uid,capital=capital,db_path=db_path,timeframe=self.source_timeframe,allow_fractional_shares=False);self.reset_futures_state()
     def reset_futures_state(self):
         self.position_direction=0;self.entry_price=None;self.entry_timestamp=None;self.entry_atr=None;self.stop_price=None;self.previous_settlement=None;self.account_equity=float(self.initial_capital);self.cumulative_pnl=0.;self.futures_tradebook=[];self.futures_equity_history=[];self.signal_log=[]
     def required_symbols(self):return [self.data_symbol]
@@ -24,7 +26,11 @@ class BaseFuturesStrategy(BaseStrategy,ABC):
     def required_history(self):return max(self.strategy_required_history(),int(self.parameters["atr_period"])+2)
     @abstractmethod
     def generate_desired_position(self,data):...
-    def _history_ohlc(self,bars):return normalize_ohlc(pd.concat({f:self.history(self.data_symbol,f,bars) for f in ("open","high","low","close","volume")},axis=1))
+    def _raw_bars_needed(self,bars):return raw_bars_needed(bars,self.source_timeframe,self.bar_timeframe) if self.resampling else bars
+    def _history_ohlc(self,bars):
+        raw=normalize_ohlc(pd.concat({f:self.history(self.data_symbol,f,self._raw_bars_needed(bars)) for f in ("open","high","low","close","volume")},axis=1))
+        if not self.resampling:return raw
+        return resample_ohlcv(raw,self.bar_timeframe,source_timeframe=self.source_timeframe).tail(bars)
     def portfolio_value(self):return float(self.account_equity)
     def _mtm(self,price):
         if self.previous_settlement is None:self.previous_settlement=price;return 0.
@@ -43,8 +49,10 @@ class BaseFuturesStrategy(BaseStrategy,ABC):
         if desired!=0:self._open(desired,price,a,"SIGNAL_ENTRY" if self.position_direction==0 else "SIGNAL_REVERSAL_ENTRY",notes)
     def on_day_close(self):
         bars=self.required_history()
-        if not self.has_history(self.data_symbol,bars):return
-        data=self._history_ohlc(bars);cur=data.iloc[-1];close=float(cur.close)
+        if not self.has_history(self.data_symbol,self._raw_bars_needed(bars)):return
+        data=self._history_ohlc(bars)
+        if len(data)<bars:return
+        cur=data.iloc[-1];close=float(cur.close)
         stop=None
         if self.position_direction>0 and self.stop_price is not None and cur.low<=self.stop_price:stop=self.stop_price
         if self.position_direction<0 and self.stop_price is not None and cur.high>=self.stop_price:stop=self.stop_price
@@ -59,8 +67,15 @@ class BaseFuturesStrategy(BaseStrategy,ABC):
         except KeyError:return
         notional=abs(self.position_direction)*self.contracts*close*self.instrument.multiplier;lev=notional/self.account_equity if self.account_equity>0 else float("inf")
         self.futures_equity_history.append({"timestamp":self.get_current_timestamp(),"uid":self.uid,"cash":self.account_equity,"market_value":0.,"equity":self.account_equity,"daily_pnl":self.signal_log[-1]["daily_pnl"] if self.signal_log and self.signal_log[-1]["timestamp"]==self.get_current_timestamp() else 0.,"cumulative_pnl":self.cumulative_pnl,"contract_symbol":self.symbol,"data_symbol":self.data_symbol,"position_direction":self.position_direction,"contracts":self.contracts,"close":close,"notional_exposure":notional,"effective_leverage":lev,"stop_price":self.stop_price})
+    def _bar_close_timestamps(self,req,start,end):
+        raw=self.timestamps(symbols=req,start=start,end=end)
+        if not self.resampling or raw.empty:return raw
+        # Only fire once per resampled bar close (the last raw tick in each
+        # bucket), not once per raw source-timeframe tick.
+        closes=pd.Series(raw,index=raw).resample(to_pandas_rule(self.bar_timeframe)).last()
+        return pd.DatetimeIndex(closes.dropna().to_numpy())
     def run(self,symbols=None,start=None,end=None):
-        req=list(symbols or self.required_symbols());self.reset_futures_state();dates=self.timestamps(symbols=req,start=start,end=end)
+        req=list(symbols or self.required_symbols());self.reset_futures_state();dates=self._bar_close_timestamps(req,start,end)
         for t in dates:self.set_current_timestamp(t);self.on_day_close();self._record()
         return {"tradebook":self.get_tradebook(),"equity":self.get_equity_history(),"positions":self.get_positions_frame(),"signals":self.get_signal_log()}
     def get_tradebook(self):return pd.DataFrame(self.futures_tradebook)

@@ -20,7 +20,7 @@ from strategies.futures.factory import create_futures_strategy
 # Run one or many UIDs. See strategies/futures/README.md for the full UID
 # grammar of each strategy.
 UIDS = [
-    "dcemachop__s=ES__dc=20__ema=200__adx_period=14__adx=25__chop_period=14__chop=35__atr=14__sl_atr=2",
+    "dcemachop__s=MES__dc=20__ema=200__adx_period=14__adx=25__chop_period=14__chop=35__atr=14__sl_atr=2",
 
     # Supertrend + EMA:
     # "stema__s=MES__st_period=10__st_mult=3__ema=200__atr=14__sl_atr=2",
@@ -57,8 +57,8 @@ END_DATE = None
 # under futures_data*.duckdb; `s=ES` only has real data under
 # market_data.duckdb/1d.
 
-# DB_PATH = PROJECT_ROOT / "duckdb" / "futures_data_1h.duckdb"
-DB_PATH = PROJECT_ROOT / "duckdb" / "market_data.duckdb"
+DB_PATH = PROJECT_ROOT / "duckdb" / "futures_data_1h.duckdb"
+# DB_PATH = PROJECT_ROOT / "duckdb" / "market_data.duckdb"
 
 # SOURCE_TIMEFRAME is what's actually stored in DB_PATH. TIMEFRAME is what
 # the strategy should trade on; when it differs from SOURCE_TIMEFRAME,
@@ -67,8 +67,8 @@ DB_PATH = PROJECT_ROOT / "duckdb" / "market_data.duckdb"
 # built from the materialized 1h store (any multiple of the source
 # timeframe works: 2h, 3h, 6h, 12h, ...). Set TIMEFRAME = SOURCE_TIMEFRAME
 # for no resampling at all (the fastest path, used by default here).
-SOURCE_TIMEFRAME = "1d"
-TIMEFRAME = "1d"
+SOURCE_TIMEFRAME = "1h"
+TIMEFRAME = "6h"
 
 OUTPUT_ROOT = "results/futures"
 
@@ -136,13 +136,24 @@ def run_uid(
         end=end_date,
     )
 
-    output_dir = Path(OUTPUT_ROOT) / strategy_name / uid
+    # Unique per (uid, timeframe, source_timeframe, db) -- the UID string
+    # alone doesn't capture which db/timeframe combo produced it, so two
+    # runs of the identical UID at different timeframes/sources would
+    # otherwise silently overwrite each other's saved results.
+    db_label = Path(DB_PATH).stem
+    config_label = f"tf={TIMEFRAME}__src={SOURCE_TIMEFRAME}__db={db_label}"
+    output_dir = Path(OUTPUT_ROOT) / strategy_name / uid / config_label
 
     report = save_and_print_results(
         strategy=strategy,
         result=result,
         output_dir=output_dir,
-        metadata=strategy.parameters,
+        metadata={
+            **strategy.parameters,
+            "run_timeframe": TIMEFRAME,
+            "run_source_timeframe": SOURCE_TIMEFRAME,
+            "run_db": db_label,
+        },
         periods_per_year=_periods_per_year(result.get("equity")),
     )
 

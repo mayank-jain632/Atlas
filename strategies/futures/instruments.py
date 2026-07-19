@@ -17,9 +17,9 @@ class FuturesInstrument:
 # data_symbol notes:
 #   - Root contracts (ES, NQ, YM, RTY, GC, SI, CL, NG, ZN, ZB) price off their
 #     own daily continuous contract in market_data.duckdb (e.g. "ES=F").
-#   - MES, MNQ, MGC, MCL, MNG, MHG, SIL have their own dedicated 1-minute
-#     series in duckdb/futures_data.duckdb (e.g. "MES=F" -- the micro
-#     ticker itself, not the root) and price off that directly.
+#   - MES, MNQ, MGC, MCL, MNG, SIL have their own dedicated series in
+#     duckdb/futures_data_1h.duckdb (e.g. "MES=F" -- the micro ticker
+#     itself, not the root) and price off that directly.
 #   - MYM and M2K have no dedicated micro data source yet, so they still
 #     proxy off their root's daily series ("YM=F" / "RTY=F").
 FUTURES_INSTRUMENTS = {
@@ -41,11 +41,6 @@ FUTURES_INSTRUMENTS = {
     "MNG": FuturesInstrument("MNG","MNG=F","NG",1000.0,0.001,1.0,(5.0,12.0),"Micro Henry Hub Natural Gas"),
     "ZN": FuturesInstrument("ZN","ZN=F","ZN",1000.0,1/64,15.625,(20.0,40.0),"10-Year Treasury Note"),
     "ZB": FuturesInstrument("ZB","ZB=F","ZB",1000.0,1/32,31.25,(15.0,35.0),"Treasury Bond"),
-    # NOTE: multiplier/tick figures below follow the standard-size/10 pattern
-    # used by the other micro contracts here, but I could not fully verify
-    # them against a current CME contract spec sheet -- double check before
-    # trading MHG live.
-    "MHG": FuturesInstrument("MHG","MHG=F","HG",2500.0,0.0005,1.25,(7.0,14.0),"Micro Copper"),
 }
 
 def normalize_futures_symbol(symbol: str) -> str:

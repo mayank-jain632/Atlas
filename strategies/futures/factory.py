@@ -1,7 +1,10 @@
 from .stema import STEMAStrategy
 from .psarema import PSAREMAStrategy
 from .dcemachop import DCEMACHOPStrategy
-FUTURES_STRATEGY_CLASSES={"stema":STEMAStrategy,"psarema":PSAREMAStrategy,"dcemachop":DCEMACHOPStrategy}
+from .rsimom import RSIMomentumStrategy
+from .dcbreakout import DonchianAsymmetricBreakoutStrategy
+from .bbtrend import BollingerTrendStrategy
+FUTURES_STRATEGY_CLASSES={"stema":STEMAStrategy,"psarema":PSAREMAStrategy,"dcemachop":DCEMACHOPStrategy,"rsimom":RSIMomentumStrategy,"dcbreakout":DonchianAsymmetricBreakoutStrategy,"bbtrend":BollingerTrendStrategy}
 def create_futures_strategy(uid,capital,db_path=None,timeframe="1d"):
     name=uid.split("__",1)[0].strip().lower()
     if name not in FUTURES_STRATEGY_CLASSES:raise ValueError(f"Unknown futures strategy: {name}")

@@ -13,7 +13,29 @@ def true_range(data):
     return pd.concat([f.high-f.low,(f.high-pc).abs(),(f.low-pc).abs()],axis=1).max(axis=1)
 
 def atr(data,period=14):return true_range(data).ewm(alpha=1/int(period),adjust=False,min_periods=int(period)).mean()
+
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
 def ema(series,period):return series.ewm(span=int(period),adjust=False,min_periods=int(period)).mean()
+
+def bollinger(data, period=20, num_std=1.0):
+    f = normalize_ohlc(data)
+    mid = f.close.rolling(period).mean()
+    std = f.close.rolling(period).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    r = f.copy()
+    r["bb_mid"] = mid
+    r["bb_upper"] = upper
+    r["bb_lower"] = lower
+    return r
 
 def donchian(data,period=20):
     f=normalize_ohlc(data); r=f.copy(); r["donchian_upper"]=f.high.shift(1).rolling(period).max(); r["donchian_lower"]=f.low.shift(1).rolling(period).min(); return r

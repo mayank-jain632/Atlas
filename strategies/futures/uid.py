@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from .instruments import get_futures_instrument
-SUPPORTED_FUTURES_STRATEGIES={"stema","psarema","dcemachop"}
+SUPPORTED_FUTURES_STRATEGIES={"stema","psarema","dcemachop", "rsimom", "dcbreakout", "bbtrend"}
 
 def parse_uid_parts(uid: str):
     parts=[p.strip() for p in uid.split("__") if p.strip()]
@@ -30,6 +30,12 @@ def parse_futures_uid(uid: str)->dict[str,Any]:
         p.update(supertrend_period=int(_get(raw,"st_period","stp")),supertrend_multiplier=float(_get(raw,"st_mult","stm")),ema_period=int(_get(raw,"ema","ema_period")))
     elif strategy=="psarema":
         p.update(psar_step=float(_get(raw,"psar_step","step")),psar_max=float(_get(raw,"psar_max","max")),ema_period=int(_get(raw,"ema","ema_period")))
-    else:
+    elif strategy=="dcemachop":
         p.update(donchian_period=int(_get(raw,"dc","donchian_period")),ema_period=int(_get(raw,"ema","ema_period")),adx_period=int(raw.get("adx_period","14")),adx_threshold=float(_get(raw,"adx","adx_threshold")),chop_period=int(raw.get("chop_period","14")),chop_threshold=float(_get(raw,"chop","chop_threshold")))
+    elif strategy=="rsimom":
+        p.update(rsi_period=int(raw.get("rsi_period","9")),rsi_ema_period=int(raw.get("rsi_ema","9")),trend_ema_period=int(raw.get("trend_ema","200")),exit_fast_period=int(raw.get("exit_fast","20")),exit_slow_period=int(raw.get("exit_slow","50")))
+    elif strategy=="dcbreakout":
+        p.update(upper_period=int(raw.get("upper","50")),lower_period=int(raw.get("lower","40")))
+    elif strategy=="bbtrend":
+        p.update(bb_period=int(raw.get("bb_period","20")),bb_std=float(raw.get("bb_std","1")),trend_ema_period=int(raw.get("trend_ema","200")),volume_ma_period=int(raw.get("vol_ma","20")))
     return p

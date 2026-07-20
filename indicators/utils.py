@@ -89,6 +89,31 @@ def require_hlc(
     )
 
 
+def normalize_ohlc(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Normalize an OHLC(V) frame for consumers that need sorted,
+    numeric columns (e.g. strategy execution loops).
+    """
+    frame = require_hlc(data)
+
+    for column in {
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    }:
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(
+                frame[column],
+                errors="coerce",
+            )
+
+    return frame.sort_index()
+
+
 def validate_period(
     period: int,
     name: str = "period",

@@ -42,8 +42,11 @@ from .volatility import (
     true_range,
 )
 
+from .utils import normalize_ohlc
+
 
 __all__ = [
+    "normalize_ohlc",
     "sma",
     "ema",
     "wma",

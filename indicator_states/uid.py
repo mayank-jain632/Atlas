@@ -6,11 +6,25 @@ from indicator_states import (
     create_indicator_state,
 )
 
-from strategies.uid_utils import (
-    get_float,
-    get_int,
-    require,
-)
+
+# indicator_states sits below strategies (strategies consume it, not the
+# reverse), so these three helpers are inlined rather than imported from
+# strategies.uid_utils -- importing that module would import the whole
+# strategies package, which imports back into indicator_states.uid and
+# creates a circular import.
+
+def require(parameters: dict[str, str], key: str) -> str:
+    if key not in parameters:
+        raise ValueError(f"Missing UID parameter: {key}")
+    return parameters[key]
+
+
+def get_int(parameters: dict[str, str], key: str, default: int) -> int:
+    return int(parameters.get(key, default))
+
+
+def get_float(parameters: dict[str, str], key: str, default: float) -> float:
+    return float(parameters.get(key, default))
 
 
 def create_state_from_parameters(

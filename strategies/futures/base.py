@@ -50,7 +50,8 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
     3. Signals are evaluated at the daily close.
     4. Signal entries and exits occur at that close.
     5. Open positions are marked to market each day.
-    6. The ATR stop is fixed using ATR at entry.
+    6. The ATR stop trails: each day it is recomputed from today's close
+       and today's ATR, and only ever moves in the position's favor.
     7. If the market gaps through the stop, the fill occurs at the open.
     8. Commissions, slippage, roll costs and margin enforcement are not
        included yet.
@@ -664,12 +665,60 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
     # ATR stop
     # ========================================================
 
+    def _update_trailing_stop(
+        self,
+        close: float,
+        current_atr: float,
+    ) -> None:
+        """
+        Ratchet the ATR stop toward price using today's close and ATR.
+
+        The candidate stop is recomputed every day from the current close
+        and current ATR. The stop only ever moves in the position's favor
+        (up for longs, down for shorts); it never loosens back toward
+        entry, even if volatility drops or price pulls back.
+        """
+
+        if (
+            self.position_direction == 0
+            or self.stop_price is None
+        ):
+            return
+
+        stop_distance = (
+            float(
+                self.parameters[
+                    "stop_atr_multiple"
+                ]
+            )
+            * float(current_atr)
+        )
+
+        if self.position_direction > 0:
+            candidate_stop = (
+                close - stop_distance
+            )
+
+            self.stop_price = max(
+                self.stop_price,
+                candidate_stop,
+            )
+        else:
+            candidate_stop = (
+                close + stop_distance
+            )
+
+            self.stop_price = min(
+                self.stop_price,
+                candidate_stop,
+            )
+
     def _stop_fill_price(
         self,
         bar: dict[str, float],
     ) -> float | None:
         """
-        Determine whether the fixed ATR stop was triggered.
+        Determine whether the trailing ATR stop was triggered.
 
         Long position
         -------------
@@ -922,6 +971,22 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
                 current_atr
             ),
             diagnostics=diagnostics,
+        )
+
+        # ----------------------------------------------------
+        # Trail the stop for whatever position is now open
+        # ----------------------------------------------------
+        #
+        # Safe to call unconditionally: a position opened or reversed
+        # this same bar was just given stop_price = close -/+ mult *
+        # current_atr in _open_position, so recomputing the candidate
+        # from the same close/current_atr here is a no-op for it.
+
+        self._update_trailing_stop(
+            close=close,
+            current_atr=float(
+                current_atr
+            ),
         )
 
         direction_after = int(

@@ -1,14 +1,19 @@
 """Parameter-grid sweep for futures strategies.
 
-Reuses runners/run_futures_strats.py's execution engine (run_uid,
-_periods_per_year, output-dir naming) instead of duplicating it -- this
-script's only job is to build a list of run configs and collect their
-results into one comparison table. Each strategy builds its own UIDs via
-the build_uid() helper living alongside it (strategies/futures/dcemachop.py,
-stema.py, psarema.py), so the parameter grammar for each strategy only
-has one place it can drift out of sync with strategies/futures/uid.py.
+Reuses runners/run_futures_strats.py's execution engine (run_uid, the
+module-level DB_PATH/TIMEFRAME/SOURCE_TIMEFRAME config it reads inside
+create_strategy(), and its results/output-dir naming) instead of
+duplicating any of that. This script's only job is to build a list of
+UIDs and collect their results into one comparison table.
 
-See strategies/futures/README.md for the UID grammar and data sources.
+There's no build_uid() helper on the strategy modules (stema.py,
+dcemachop.py, psarema.py) -- UID strings are built directly here with an
+f-string against the grammar in strategies/futures/uid.py /
+strategies/futures/README.md.
+
+Per-combo plotting is disabled (plot_futures_strategy is monkeypatched
+to a no-op): a sweep like this doesn't need one PNG per combo, and
+rendering each one is a meaningful chunk of every run's wall time.
 """
 
 from __future__ import annotations
@@ -23,63 +28,82 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import runners.run_futures_strats_mj as base
-from strategies.futures.dcemachop import build_uid as build_dcemachop_uid
-from strategies.futures.stema import build_uid as build_stema_uid
-from strategies.futures.psarema import build_uid as build_psarema_uid
+import runners.run_futures_strats as base
+
+base.plot_futures_strategy = lambda **_kwargs: None
 
 # ============================================================
-# Data sources (same three as run_futures_strats.py)
+# Fixed across the whole sweep
 # ============================================================
 
-DAILY_ROOT = dict(db_path=PROJECT_ROOT / "duckdb" / "market_data.duckdb", source_timeframe="1d")
-MICRO_1M = dict(db_path=PROJECT_ROOT / "duckdb" / "futures_data.duckdb", source_timeframe="1m")
-MICRO_1H = dict(db_path=PROJECT_ROOT / "duckdb" / "futures_data_1h.duckdb", source_timeframe="1h")
+SYMBOL = "MES"
+ATR_PERIOD = 14
+STOP_ATR_MULTIPLE = 10  # Trailing ATR stop -- already validated, not swept.
+
+CAPITAL = 10_000.0
+START_DATE = None
+END_DATE = None
+
+TIMEFRAME = "4h"
+SOURCE_TIMEFRAME = "1h"  # Only "1h" is materialized in this DB; 4h bars
+                         # are resampled from it on the fly (see
+                         # BaseFuturesStrategy's resampling note).
+DB_PATH = PROJECT_ROOT / "duckdb" / "futures_data_1h.duckdb"
 
 # ============================================================
-# Grid to run
+# Indicator parameters being swept
 # ============================================================
-# Each entry fully specifies one backtest. Build this list by hand or with
-# a loop -- a loop only needs to vary axes that stay valid together (you
-# can't resample "1d" bars up to "1h", so don't cross a data source with a
-# timeframe it can't produce). Example ADX/Chop sweep at a fixed timeframe:
-#
-#   RUNS = [
-#       {
-#           "uid": build_dcemachop_uid(symbol="CL", adx_threshold=adx, chop_threshold=chop),
-#           **DAILY_ROOT, "timeframe": "1d", "capital": 50_000.0,
-#           "start_date": None, "end_date": None,
-#       }
-#       for adx in (20, 25, 30)
-#       for chop in (30, 35, 40, 45)
-#   ]
+
+ST_PERIODS = [7, 10, 14]
+ST_MULTS = [2, 3, 4]
+EMA_PERIODS = [50, 100, 200]
+# add a run grid for ATR from 2-10
+
+
+def build_stema_uid(
+    *,
+    symbol: str,
+    st_period: int,
+    st_mult: float,
+    ema_period: int,
+    atr_period: int,
+    stop_atr_multiple: float,
+) -> str:
+    return (
+        f"stema__s={symbol}"
+        f"__st_period={st_period}"
+        f"__st_mult={st_mult}"
+        f"__ema={ema_period}"
+        f"__atr={atr_period}"
+        f"__sl_atr={stop_atr_multiple}"
+    )
+
 
 RUNS: list[dict[str, Any]] = [
-    # Priority check: same dcemachop parameters, native daily bars on the
-    # full-size root contract -- the direct apples-to-apples comparison
-    # against a "documented on daily bars" reference.
     {
-        "uid": build_dcemachop_uid(symbol="CL"),
-        **DAILY_ROOT,
-        "timeframe": "1d",
-        "capital": 50_000.0,
-        "start_date": None,
-        "end_date": None,
-    },
-    # The same parameters as-is on 1h micro bars (what we've been running)
-    # -- kept side by side so the comparison table shows the gap directly.
-    {
-        "uid": build_dcemachop_uid(symbol="MCL"),
-        **MICRO_1H,
-        "timeframe": "1h",
-        "capital": 50_000.0,
-        "start_date": "2025-01-01",
-        "end_date": None,
-    },
+        "uid": build_stema_uid(
+            symbol=SYMBOL,
+            st_period=st_period,
+            st_mult=st_mult,
+            ema_period=ema_period,
+            atr_period=ATR_PERIOD,
+            stop_atr_multiple=STOP_ATR_MULTIPLE,
+        ),
+        "capital": CAPITAL,
+        "start_date": START_DATE,
+        "end_date": END_DATE,
+    }
+    for st_period in ST_PERIODS
+    for st_mult in ST_MULTS
+    for ema_period in EMA_PERIODS
 ]
 
 
 def run_grid(runs: list[dict[str, Any]]) -> pd.DataFrame:
+    base.DB_PATH = DB_PATH
+    base.TIMEFRAME = TIMEFRAME
+    base.SOURCE_TIMEFRAME = SOURCE_TIMEFRAME
+
     outputs: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
 
@@ -88,24 +112,18 @@ def run_grid(runs: list[dict[str, Any]]) -> pd.DataFrame:
         print(f"RUNNING {index} OF {len(runs)}")
         print("#" * 76)
 
-        # run_futures_strats.run_uid()/create_strategy() read DB_PATH/
-        # TIMEFRAME/SOURCE_TIMEFRAME as module-level config rather than
-        # function parameters -- set them here per grid entry instead of
-        # duplicating the run/report logic in this file.
-        base.DB_PATH = run_config["db_path"]
-        base.TIMEFRAME = run_config["timeframe"]
-        base.SOURCE_TIMEFRAME = run_config["source_timeframe"]
-
         try:
             output = base.run_uid(
                 uid=run_config["uid"],
                 capital=run_config["capital"],
-                start_date=run_config.get("start_date"),
-                end_date=run_config.get("end_date"),
+                start_date=run_config["start_date"],
+                end_date=run_config["end_date"],
             )
-            outputs.append({**output, **run_config})
+            outputs.append(output)
         except Exception as exc:
-            failures.append({"uid": run_config["uid"], "error": str(exc)})
+            failures.append(
+                {"uid": run_config["uid"], "error": str(exc)}
+            )
             print("\nBACKTEST FAILED")
             print(f"UID:   {run_config['uid']}")
             print(f"Error: {exc}")
@@ -124,28 +142,39 @@ def run_grid(runs: list[dict[str, Any]]) -> pd.DataFrame:
 
     summary_rows = []
     for output in outputs:
-        metrics = output["report"].get("metrics", {})
-        summary_rows.append({
-            "uid": output["uid"],
-            "timeframe": output["timeframe"],
-            "source_timeframe": output["source_timeframe"],
-            "db": Path(output["db_path"]).stem,
-            "trades": len(output["result"]["tradebook"]),
-            **metrics,
-        })
+        metrics = (output["report"] or {}).get("metrics", {})
+        summary_rows.append(
+            {
+                "uid": output["uid"],
+                "trades": len(output["result"]["tradebook"]),
+                **metrics,
+            }
+        )
 
     summary = pd.DataFrame(summary_rows)
 
     if not summary.empty:
         display_columns = [
-            c for c in
-            ["uid", "timeframe", "db", "trades", "cagr", "sharpe_ratio", "max_drawdown", "final_equity"]
+            c
+            for c in (
+                "uid",
+                "trades",
+                "cagr",
+                "sharpe_ratio",
+                "max_drawdown",
+                "final_equity",
+            )
             if c in summary.columns
         ]
+
         print()
         print("COMPARISON")
         print("-" * 76)
-        print(summary[display_columns].to_string(index=False))
+        print(
+            summary[display_columns]
+            .sort_values("sharpe_ratio", ascending=False)
+            .to_string(index=False)
+        )
 
         summary_path = Path(base.OUTPUT_ROOT) / "grid_summary.csv"
         summary_path.parent.mkdir(parents=True, exist_ok=True)

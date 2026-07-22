@@ -9,6 +9,7 @@ import pandas as pd
 
 from strategies.base import BaseStrategy
 
+from data.resample import raw_bars_needed, resample_ohlcv
 from indicators import atr
 from indicators.utils import normalize_columns
 from .instruments import FuturesInstrument, get_futures_instrument
@@ -47,14 +48,31 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
     -------------------
     1. One strategy trades one futures contract.
     2. Position size is fixed at one contract.
-    3. Signals are evaluated at the daily close.
+    3. Signals are evaluated at each bar's close (the "bar" being
+       `timeframe` -- daily, or a coarser bar resampled on the fly from
+       `source_timeframe` if the two differ; see the resampling note
+       below).
     4. Signal entries and exits occur at that close.
-    5. Open positions are marked to market each day.
-    6. The ATR stop trails: each day it is recomputed from today's close
-       and today's ATR, and only ever moves in the position's favor.
+    5. Open positions are marked to market each bar.
+    6. The ATR stop trails: each bar it is recomputed from that bar's
+       close and current ATR, and only ever moves in the position's favor.
     7. If the market gaps through the stop, the fill occurs at the open.
     8. Commissions, slippage, roll costs and margin enforcement are not
        included yet.
+
+    Resampling
+    ----------
+    `timeframe` is the bar the strategy trades on. `source_timeframe` is
+    the raw bar actually stored in the database. When they differ, every
+    history fetch pulls `source_timeframe` rows and resamples them up to
+    `timeframe` on the fly (see `_history_ohlc`); nothing is pre-computed
+    or cached. The backtest loop still steps one `source_timeframe` row at
+    a time (inherited from `run()`), so `on_day_close` runs once per raw
+    bar even though the strategy only acts on the last *complete*
+    `timeframe` bar -- indicators get recomputed on the intermediate raw
+    bars but nothing changes until a new `timeframe` bar closes, so this
+    is wasted CPU, not a correctness issue. Fine for the bar counts this
+    framework runs today; revisit if that stops being true.
     """
 
     strategy_name = "futures_base"
@@ -65,6 +83,7 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
         capital: float,
         db_path: str | Path | None = None,
         timeframe: str = "1d",
+        source_timeframe: str | None = None,
         allow_fractional_shares: bool = False,
     ) -> None:
         parameters = parse_futures_uid(uid)
@@ -89,10 +108,28 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
         # Fixed at one contract for the initial framework.
         self.contracts: int = 1
 
+        # The bar the strategy trades on vs. the raw bar stored in the
+        # database. If no source_timeframe is given, there is nothing to
+        # resample -- the strategy trades directly on the stored bar.
+        self.bar_timeframe: str = str(timeframe)
+
+        self.source_timeframe: str = (
+            str(source_timeframe)
+            if source_timeframe
+            else self.bar_timeframe
+        )
+
+        self.resampling: bool = (
+            self.source_timeframe
+            != self.bar_timeframe
+        )
+
         kwargs: dict[str, Any] = {
             "uid": uid,
             "capital": float(capital),
-            "timeframe": timeframe,
+            # The underlying DataInterface always queries at the raw
+            # (source) cadence; _history_ohlc resamples up when needed.
+            "timeframe": self.source_timeframe,
             "allow_fractional_shares": False,
         }
 
@@ -198,20 +235,43 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
     # Market data
     # ========================================================
 
+    def _raw_bars_needed(
+        self,
+        bars: int,
+    ) -> int:
+        """
+        Translate a target-timeframe bar count into a source-timeframe
+        (raw, as-stored) bar count.
+
+        Identity when the strategy isn't resampling.
+        """
+
+        if not self.resampling:
+            return bars
+
+        return raw_bars_needed(
+            bars,
+            self.source_timeframe,
+            self.bar_timeframe,
+        )
+
     def _history_ohlc(
         self,
         bars: int,
     ) -> pd.DataFrame:
         """
-        Build a normal single-level OHLCV DataFrame from Atlas history.
+        Build a normal single-level OHLCV DataFrame from Atlas history,
+        resampled up to `bar_timeframe` if `source_timeframe` differs.
         """
+
+        raw_bars = self._raw_bars_needed(bars)
 
         history = pd.DataFrame(
             {
                 field: self.history(
                     symbol=self.data_symbol,
                     field=field,
-                    bars=bars,
+                    bars=raw_bars,
                 )
                 for field in (
                     "open",
@@ -223,7 +283,16 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
             }
         )
 
-        return normalize_columns(history).sort_index()
+        history = normalize_columns(history).sort_index()
+
+        if not self.resampling:
+            return history
+
+        return resample_ohlcv(
+            history,
+            self.bar_timeframe,
+            source_timeframe=self.source_timeframe,
+        ).tail(bars)
 
     # ========================================================
     # Futures accounting
@@ -796,7 +865,9 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
 
         if not self.has_history(
             symbol=self.data_symbol,
-            bars=history_bars,
+            bars=self._raw_bars_needed(
+                history_bars
+            ),
         ):
             self._daily_event = (
                 "INSUFFICIENT_HISTORY"

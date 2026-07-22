@@ -19,7 +19,7 @@ from strategies.momentum import (
 
 # Run one or many UIDs.
 UIDS = [
-    "buy_hold__s=QQQ__w=1",
+    #"buy_hold__s=QQQ__w=1",
 
     # Buy and hold:
     # "buy_hold__s=SPY__w=1",
@@ -31,12 +31,14 @@ UIDS = [
     # "buy_hold_indicator__s=QQQ__w=1__state=rsi__period=14__bearish=40__bullish=50",
 
     # Standard momentum:
-    # "momentum__u=sp500__sig=price__lb=90__rb=monthly__n=10__alloc=score",
+    # =============== RUN SWEEP ================
+    "momentum__u=nasdaq100__sig=price__lb=90__rb=monthly__n=10__alloc=score",
     # "momentum__u=nasdaq100__sig=vol_adj__lb=126__rb=monthly__n=10__alloc=equal",
 
     # Diversity momentum:
     # "momentum_diversity__u=sp500__sig=price__lb=90__rb=monthly__n=10__div=graph_cut__dlb=60__lam=0.25__alloc=score",
 
+    # =============== RUN SWEEP ================ try macd and ema as well, not supertrend
     # Indicator-controlled momentum:
     # "momentum_indicator__u=sp500__sig=price__lb=90__rb=monthly__n=10__alloc=score__filter=SPY__liquidate=true__reenter=true__state=ma_crossover__fast=50__slow=200__method=sma",
 
@@ -46,7 +48,7 @@ UIDS = [
 ]
 
 CAPITAL = 100_000.0
-START_DATE = "2000-01-01"
+START_DATE = "1990-01-01"
 END_DATE = None
 TIMEFRAME = "1d"
 ALLOW_FRACTIONAL_SHARES = True

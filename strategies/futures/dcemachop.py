@@ -25,6 +25,7 @@ class DCEMACHOPStrategy(BaseFuturesStrategy):
         capital: float,
         db_path: str | Path | None = None,
         timeframe: str = "1d",
+        source_timeframe: str | None = None,
         allow_fractional_shares: bool = False,
     ) -> None:
         super().__init__(
@@ -32,6 +33,7 @@ class DCEMACHOPStrategy(BaseFuturesStrategy):
             capital=capital,
             db_path=db_path,
             timeframe=timeframe,
+            source_timeframe=source_timeframe,
             allow_fractional_shares=False,
         )
         if self.parameters["strategy_type"] != self.strategy_name:

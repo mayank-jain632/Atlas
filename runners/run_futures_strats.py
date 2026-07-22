@@ -53,6 +53,15 @@ END_DATE = None
 
 TIMEFRAME = "1h"
 
+# The raw bar actually stored in DB_PATH. Leave as None when TIMEFRAME
+# already matches what's in the database (no resampling). Set this to
+# the DB's native bar (e.g. "1h") when TIMEFRAME is coarser (e.g. "4h")
+# -- history is then resampled up on the fly. If TIMEFRAME doesn't match
+# the database and SOURCE_TIMEFRAME is left None, the strategy queries a
+# timeframe that doesn't exist and the run fails loudly with "empty
+# equity curve" (validate_result), not silently.
+SOURCE_TIMEFRAME = None
+
 DB_PATH = PROJECT_ROOT / "duckdb" / "futures_data_1h.duckdb"
 
 OUTPUT_ROOT = Path(
@@ -88,6 +97,7 @@ def create_strategy(
         capital=capital,
         db_path=DB_PATH,
         timeframe=TIMEFRAME,
+        source_timeframe=SOURCE_TIMEFRAME,
     )
 
     return strategy_name, strategy
@@ -431,6 +441,12 @@ def run_uid(
     print(
         f"Timeframe:      "
         f"{TIMEFRAME}"
+        + (
+            f" (resampled from {SOURCE_TIMEFRAME})"
+            if SOURCE_TIMEFRAME
+            and SOURCE_TIMEFRAME != TIMEFRAME
+            else ""
+        )
     )
 
     print("=" * 76)

@@ -5,9 +5,9 @@ import re
 import pandas as pd
 
 
-_TIMEFRAME_PATTERN = re.compile(r"^(\d+)\s*(m|min|h|d)$", re.IGNORECASE)
+_TIMEFRAME_PATTERN = re.compile(r"^(\d+)\s*(m|min|h|d|w)$", re.IGNORECASE)
 
-_PANDAS_UNIT = {"min": "min", "h": "h", "d": "D"}
+_PANDAS_UNIT = {"min": "min", "h": "h", "d": "D", "w": "W"}
 
 OHLCV_AGG = {
     "open": "first",

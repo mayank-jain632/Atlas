@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from .instruments import get_futures_instrument
-SUPPORTED_FUTURES_STRATEGIES={"stema","psarema","dcemachop", "rsimom", "emamacd", "bbtrend"}
+SUPPORTED_FUTURES_STRATEGIES={"stema","psarema","dcemachop", "rsimom", "emamacd", "bbtrend", "dcbreakout"}
 
 def parse_uid_parts(uid: str):
     parts=[p.strip() for p in uid.split("__") if p.strip()]
@@ -38,4 +38,6 @@ def parse_futures_uid(uid: str)->dict[str,Any]:
         p.update(trend_ema_period=int(raw.get("trend_ema","200")),target_timeframe=raw.get("tf","4h"))
     elif strategy=="bbtrend":
         p.update(bb_period=int(raw.get("bb_period","20")),bb_std=float(raw.get("bb_std","1")),trend_ema_period=int(raw.get("trend_ema","200")),volume_ma_period=int(raw.get("vol_ma","20")),target_timeframe=raw.get("tf","8h"))
+    elif strategy=="dcbreakout":
+        p.update(upper_period=int(raw.get("upper","50")),lower_period=int(raw.get("lower","40")),target_timeframe=raw.get("tf","1w"))
     return p

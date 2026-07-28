@@ -8,15 +8,26 @@ results into comparison tables.
 
 Two families are swept:
 
-1. momentum (standard): u=nasdaq100, sig=price fixed -- lookback, top_n,
-   rebalance_period, and allocator vary.
-2. momentum_indicator: the base momentum parameters (u=sp500, sig=price,
-   lb=90, rb=monthly, n=10, alloc=score, filter=SPY, liquidate=true,
-   reenter=true) are held fixed at the reference UID's values; only the
-   state= indicator filter varies. ma_crossover, macd, and ema have
-   different parameter grammars (see strategies/momentum/uid.py and
-   indicator_states/uid.py), so this is three small sub-grids
+1. momentum (standard): universe, signal, lookback, top_n,
+   rebalance_period, and allocator all vary.
+2. momentum_indicator: universe, signal, lookback, rebalance_period,
+   top_n, allocator, and filter_symbol vary as the "base" momentum
+   parameters, crossed with the state= indicator filter, which varies
+   separately per indicator family since ma_crossover, macd, and ema
+   have different parameter grammars (see strategies/momentum/uid.py and
+   indicator_states/uid.py) -- three base-params x state-params sub-grids
    concatenated rather than one flat cartesian grid.
+
+The full cartesian product across both families is thousands of UIDs
+(720 momentum x 7,200 momentum_indicator at the sizes below) -- far too
+slow to run end to end in one pass at momentum's unprofiled per-UID cost.
+Instead of running everything, each family's full combination list is
+built first (the "_ALL" lists below) and then randomly subsampled down
+to MOMENTUM_SAMPLE_SIZE / INDICATOR_SAMPLE_SIZE unique UIDs -- sampling
+without replacement from an already-duplicate-free list of combinations,
+so "unique" falls out for free. Both samples are seeded
+(MOMENTUM_SEED / INDICATOR_SEED) so a rerun reproduces the same draw;
+change the seed to get a different one.
 
 Sequential by design, deliberately not parallelized yet: momentum
 backtests haven't been profiled the way futures backtests were, and
@@ -26,12 +37,13 @@ sp500 that could be a meaningful per-UID cost we don't have numbers for.
 Parallelizing without knowing the per-UID cost is exactly how the futures
 grid's first parallel attempt (see runners/run_futures_grid.py's
 MAX_WORKERS comment) ended up slower than sequential. Revisit once this
-has been run once and we have real timing.
+has been run once and we have real timing.   
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import random
 import sys
 from typing import Any
 
@@ -51,13 +63,48 @@ CAPITAL = 100_000.0
 START_DATE = "2000-01-01"
 END_DATE = None
 
+# Overrides run_strats.py's own OUTPUT_ROOT ("results") for the duration
+# of this grid -- same override pattern run_futures_grid.py uses for
+# DB_PATH/TIMEFRAME, so run_strats.py itself doesn't need to change.
+OUTPUT_ROOT = str(PROJECT_ROOT / "results" / "momentun_runs_random")
+
+# How many unique UIDs to actually run per family, sampled from the full
+# cartesian product below.
+MOMENTUM_SAMPLE_SIZE = 60
+INDICATOR_SAMPLE_SIZE = 90
+
+MOMENTUM_SEED = 42
+INDICATOR_SEED = 43
+
+
+def _sample_unique(
+    runs: list[dict[str, Any]],
+    size: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """
+    A reproducible random sample of `size` run configs.
+
+    Every entry in `runs` already has a distinct UID (it comes from a
+    cartesian product with no repeated parameter tuples), so a plain
+    sample-without-replacement is already a unique-UID sample -- no
+    extra dedup needed.
+    """
+    if size > len(runs):
+        raise ValueError(
+            f"Requested {size} samples but only {len(runs)} unique "
+            "combinations exist."
+        )
+
+    return random.Random(seed).sample(runs, size)
+
 
 # ============================================================
-# Strategy 1: momentum -- fixed universe/signal, sweep lb / n / rb / alloc
+# Strategy 1: momentum -- universe / signal / lb / n / rb / alloc all vary
 # ============================================================
 
-MOMENTUM_UNIVERSE = "nasdaq100"
-MOMENTUM_SIGNAL = "price"
+MOMENTUM_UNIVERSE = ["nasdaq100", "custom", "sp500"]
+MOMENTUM_SIGNAL = ["price", "vol_adj", "rsi", "ma_cross", "low_vol", "trend_quality"]
 
 MOMENTUM_LOOKBACKS = [60, 90, 126, 180, 252]
 MOMENTUM_TOP_NS = [5, 10, 15, 20]
@@ -84,17 +131,19 @@ def build_momentum_uid(
     )
 
 
-MOMENTUM_RUNS: list[dict[str, Any]] = [
+_MOMENTUM_RUNS_ALL: list[dict[str, Any]] = [
     {
         "uid": build_momentum_uid(
-            universe=MOMENTUM_UNIVERSE,
-            signal=MOMENTUM_SIGNAL,
+            universe=universe,
+            signal=signal,
             lookback=lookback,
             rebalance_period=rebalance_period,
             top_n=top_n,
             allocator=allocator,
         )
     }
+    for universe in MOMENTUM_UNIVERSE
+    for signal in MOMENTUM_SIGNAL
     for lookback in MOMENTUM_LOOKBACKS
     for top_n in MOMENTUM_TOP_NS
     for rebalance_period in MOMENTUM_REBALANCE_PERIODS
@@ -103,24 +152,24 @@ MOMENTUM_RUNS: list[dict[str, Any]] = [
 
 
 # ============================================================
-# Strategy 2: momentum_indicator -- fixed base params, sweep state=
+# Strategy 2: momentum_indicator -- base params vary, crossed with state=
 # ============================================================
 
-INDICATOR_UNIVERSE = "sp500"
-INDICATOR_SIGNAL = "price"
-INDICATOR_LOOKBACK = 90
-INDICATOR_REBALANCE_PERIOD = "monthly"
-INDICATOR_TOP_N = 10
-INDICATOR_ALLOCATOR = "score"
-INDICATOR_FILTER_SYMBOL = "SPY"
+INDICATOR_UNIVERSE = ["nasdaq100", "custom", "sp500"]
+INDICATOR_SIGNAL = ["price", "vol_adj", "rsi", "ma_cross", "low_vol", "trend_quality"]
+INDICATOR_LOOKBACK = [60, 90, 126, 180, 252]
+INDICATOR_REBALANCE_PERIOD = ["monthly", "quarterly"]
+INDICATOR_TOP_N = [5, 10, 15, 20]
+INDICATOR_ALLOCATOR = ["score"]
+INDICATOR_FILTER_SYMBOL = ["QQQ"]
 INDICATOR_LIQUIDATE = "true"
 INDICATOR_REENTER = "true"
 
 # ma_crossover: (fast, slow) pairs; method fixed at sma to match the
 # reference UID (fast=50/slow=200/method=sma).
 MA_CROSSOVER_PAIRS = [
-    (20, 100),
-    (20, 200),
+    # (20, 100),
+    # (20, 200),
     (50, 100),
     (50, 200),
 ]
@@ -140,15 +189,38 @@ MACD_TRIPLES = [
 EMA_PERIODS = [50, 100, 150, 200]
 
 
-def _indicator_base_tokens() -> list[str]:
+def _indicator_base_param_combos() -> list[dict[str, Any]]:
+    """Every combination of the momentum-side parameters shared by all
+    three indicator-state families."""
     return [
-        f"u={INDICATOR_UNIVERSE}",
-        f"sig={INDICATOR_SIGNAL}",
-        f"lb={INDICATOR_LOOKBACK}",
-        f"rb={INDICATOR_REBALANCE_PERIOD}",
-        f"n={INDICATOR_TOP_N}",
-        f"alloc={INDICATOR_ALLOCATOR}",
-        f"filter={INDICATOR_FILTER_SYMBOL}",
+        {
+            "universe": universe,
+            "signal": signal,
+            "lookback": lookback,
+            "rebalance_period": rebalance_period,
+            "top_n": top_n,
+            "allocator": allocator,
+            "filter_symbol": filter_symbol,
+        }
+        for universe in INDICATOR_UNIVERSE
+        for signal in INDICATOR_SIGNAL
+        for lookback in INDICATOR_LOOKBACK
+        for rebalance_period in INDICATOR_REBALANCE_PERIOD
+        for top_n in INDICATOR_TOP_N
+        for allocator in INDICATOR_ALLOCATOR
+        for filter_symbol in INDICATOR_FILTER_SYMBOL
+    ]
+
+
+def _indicator_base_tokens(base: dict[str, Any]) -> list[str]:
+    return [
+        f"u={base['universe']}",
+        f"sig={base['signal']}",
+        f"lb={base['lookback']}",
+        f"rb={base['rebalance_period']}",
+        f"n={base['top_n']}",
+        f"alloc={base['allocator']}",
+        f"filter={base['filter_symbol']}",
         f"liquidate={INDICATOR_LIQUIDATE}",
         f"reenter={INDICATOR_REENTER}",
     ]
@@ -159,7 +231,6 @@ def build_momentum_indicator_uid(
 ) -> str:
     parts = [
         "momentum_indicator",
-        *_indicator_base_tokens(),
         *state_tokens,
     ]
     return "__".join(parts)
@@ -169,7 +240,8 @@ def _ma_crossover_runs() -> list[dict[str, Any]]:
     return [
         {
             "uid": build_momentum_indicator_uid(
-                [
+                _indicator_base_tokens(base)
+                + [
                     "state=ma_crossover",
                     f"fast={fast}",
                     f"slow={slow}",
@@ -177,6 +249,7 @@ def _ma_crossover_runs() -> list[dict[str, Any]]:
                 ]
             )
         }
+        for base in _indicator_base_param_combos()
         for fast, slow in MA_CROSSOVER_PAIRS
     ]
 
@@ -185,7 +258,8 @@ def _macd_runs() -> list[dict[str, Any]]:
     return [
         {
             "uid": build_momentum_indicator_uid(
-                [
+                _indicator_base_tokens(base)
+                + [
                     "state=macd",
                     f"fast={fast}",
                     f"slow={slow}",
@@ -193,6 +267,7 @@ def _macd_runs() -> list[dict[str, Any]]:
                 ]
             )
         }
+        for base in _indicator_base_param_combos()
         for fast, slow, signal_period in MACD_TRIPLES
     ]
 
@@ -201,18 +276,37 @@ def _ema_runs() -> list[dict[str, Any]]:
     return [
         {
             "uid": build_momentum_indicator_uid(
-                [
+                _indicator_base_tokens(base)
+                + [
                     "state=ema",
                     f"period={period}",
                 ]
             )
         }
+        for base in _indicator_base_param_combos()
         for period in EMA_PERIODS
     ]
 
 
-INDICATOR_RUNS: list[dict[str, Any]] = (
+_INDICATOR_RUNS_ALL: list[dict[str, Any]] = (
     _ma_crossover_runs() + _macd_runs() + _ema_runs()
+)
+
+
+# ============================================================
+# Actual runs: a reproducible random sample of each full grid above
+# ============================================================
+
+MOMENTUM_RUNS: list[dict[str, Any]] = _sample_unique(
+    _MOMENTUM_RUNS_ALL,
+    MOMENTUM_SAMPLE_SIZE,
+    MOMENTUM_SEED,
+)
+
+INDICATOR_RUNS: list[dict[str, Any]] = _sample_unique(
+    _INDICATOR_RUNS_ALL,
+    INDICATOR_SAMPLE_SIZE,
+    INDICATOR_SEED,
 )
 
 
@@ -229,6 +323,8 @@ def run_grid(
     """
     Run one family's UID list sequentially and collect a comparison table.
     """
+
+    base.OUTPUT_ROOT = OUTPUT_ROOT
 
     outputs: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []

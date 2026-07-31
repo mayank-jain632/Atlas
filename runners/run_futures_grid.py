@@ -18,6 +18,8 @@ rendering each one is a meaningful chunk of every run's wall time.
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -99,34 +101,131 @@ RUNS: list[dict[str, Any]] = [
 ]
 
 
+# ============================================================
+# Parallel execution
+# ============================================================
+#
+# Each combo is an independent backtest, so the sweep is embarrassingly
+# parallel. Processes (not threads) because the per-bar strategy/indicator
+# work is CPU-bound Python -- threads would just serialize on the GIL.
+
+PARALLEL = True
+
+# Deliberately NOT (cpu_count - 1). Measured on this 10-core machine: running
+# 9 of these backtests concurrently (there's real per-bar CPU work, not just
+# I/O) roughly DOUBLES each one's wall time versus running alone (~150s vs
+# ~77s), and sustaining that many concurrent processes for the length of a
+# full 27-combo grid made the total slower than running sequentially. Running
+# only 3 concurrently added just ~9% overhead per task. Staying well under
+# the core count leaves headroom instead of saturating every core.
+MAX_WORKERS = max(1, (os.cpu_count() or 2) // 2 - 1)
+
+
+def _init_worker(
+    db_path: Path,
+    timeframe: str,
+    source_timeframe: str,
+) -> None:
+    """
+    Runs once per worker process at pool start-up.
+
+    ProcessPoolExecutor's default ("spawn") start method gives each worker
+    a fresh interpreter that re-imports this module from scratch, so it
+    does NOT inherit the DB_PATH/TIMEFRAME/SOURCE_TIMEFRAME this file sets
+    on `base` dynamically inside run_grid() in the parent process -- those
+    assignments only ever ran in the parent. Re-apply them here instead.
+    (base.plot_futures_strategy is a module-level assignment made at import
+    time above, so it's already reapplied for free by the reimport -- this
+    just makes that explicit rather than relying on it.)
+    """
+
+    base.DB_PATH = db_path
+    base.TIMEFRAME = timeframe
+    base.SOURCE_TIMEFRAME = source_timeframe
+    base.plot_futures_strategy = lambda **_kwargs: None
+
+
+def _run_one(run_config: dict[str, Any]) -> dict[str, Any]:
+    """
+    Run one UID and return a small summary row.
+
+    Deliberately not the full tradebook/equity/signals DataFrames: those
+    are already written to CSV by run_uid()/save_results(), and pickling
+    them back across the process boundary for every combo would be pure
+    overhead.
+    """
+
+    uid = run_config["uid"]
+
+    try:
+        output = base.run_uid(
+            uid=uid,
+            capital=run_config["capital"],
+            start_date=run_config["start_date"],
+            end_date=run_config["end_date"],
+        )
+    except Exception as exc:
+        return {"uid": uid, "error": str(exc)}
+
+    metrics = (output["report"] or {}).get("metrics", {})
+
+    return {
+        "uid": uid,
+        "trades": len(output["result"]["tradebook"]),
+        "error": None,
+        **metrics,
+    }
+
+
 def run_grid(runs: list[dict[str, Any]]) -> pd.DataFrame:
     base.DB_PATH = DB_PATH
     base.TIMEFRAME = TIMEFRAME
     base.SOURCE_TIMEFRAME = SOURCE_TIMEFRAME
 
-    outputs: list[dict[str, Any]] = []
-    failures: list[dict[str, str]] = []
+    print("\n" + "=" * 76)
+    print("ATLAS FUTURES GRID")
+    print("=" * 76)
+    print(f"Runs:        {len(runs)}")
+    print(
+        f"Parallel:    {PARALLEL} (max_workers={MAX_WORKERS})"
+        if PARALLEL
+        else "Parallel:    False (sequential)"
+    )
+    print("=" * 76)
 
-    for index, run_config in enumerate(runs, start=1):
-        print("\n" + "#" * 76)
-        print(f"RUNNING {index} OF {len(runs)}")
-        print("#" * 76)
+    rows: list[dict[str, Any]] = []
 
-        try:
-            output = base.run_uid(
-                uid=run_config["uid"],
-                capital=run_config["capital"],
-                start_date=run_config["start_date"],
-                end_date=run_config["end_date"],
-            )
-            outputs.append(output)
-        except Exception as exc:
-            failures.append(
-                {"uid": run_config["uid"], "error": str(exc)}
-            )
-            print("\nBACKTEST FAILED")
-            print(f"UID:   {run_config['uid']}")
-            print(f"Error: {exc}")
+    if PARALLEL and len(runs) > 1:
+        with ProcessPoolExecutor(
+            max_workers=MAX_WORKERS,
+            initializer=_init_worker,
+            initargs=(DB_PATH, TIMEFRAME, SOURCE_TIMEFRAME),
+        ) as executor:
+            futures = {
+                executor.submit(_run_one, run_config): run_config["uid"]
+                for run_config in runs
+            }
+
+            for completed, future in enumerate(
+                as_completed(futures), start=1
+            ):
+                uid = futures[future]
+                row = future.result()
+
+                status = "FAILED" if row.get("error") else "done"
+                print(f"[{completed}/{len(runs)}] {status:6s} {uid}")
+
+                if row.get("error"):
+                    print(f"    Error: {row['error']}")
+
+                rows.append(row)
+    else:
+        for index, run_config in enumerate(runs, start=1):
+            print(f"\n[{index}/{len(runs)}] running {run_config['uid']}")
+            rows.append(_run_one(run_config))
+
+    failures = [row for row in rows if row.get("error")]
+    outputs = [row for row in rows if not row.get("error")]
 
     print("\n" + "=" * 76)
     print("ATLAS FUTURES GRID SUMMARY")
@@ -140,18 +239,12 @@ def run_grid(runs: list[dict[str, Any]]) -> pd.DataFrame:
         for failure in failures:
             print(f"- {failure['uid']}: {failure['error']}")
 
-    summary_rows = []
-    for output in outputs:
-        metrics = (output["report"] or {}).get("metrics", {})
-        summary_rows.append(
-            {
-                "uid": output["uid"],
-                "trades": len(output["result"]["tradebook"]),
-                **metrics,
-            }
-        )
-
-    summary = pd.DataFrame(summary_rows)
+    summary = pd.DataFrame(
+        [
+            {key: value for key, value in row.items() if key != "error"}
+            for row in outputs
+        ]
+    )
 
     if not summary.empty:
         display_columns = [

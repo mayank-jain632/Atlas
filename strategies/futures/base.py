@@ -138,6 +138,13 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
 
         super().__init__(**kwargs)
 
+        # Loaded once per instance: backtests step through timestamps
+        # sequentially and never need data beyond the current one, so the
+        # whole symbol history comfortably fits in memory and can be
+        # sliced from here on instead of re-querying DuckDB every bar
+        # (see _history_ohlc / _has_sufficient_history below).
+        self._full_history: pd.DataFrame = self._load_symbol_history()
+
         self._reset_futures_state()
 
     # ========================================================
@@ -235,6 +242,46 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
     # Market data
     # ========================================================
 
+    def _load_symbol_history(self) -> pd.DataFrame:
+        """
+        Load this strategy's full data-symbol OHLCV history once.
+
+        One combined query replaces both the 5 separate per-field queries
+        `_history_ohlc` used to issue every bar and the extra COUNT(*)
+        `has_history` issued alongside them -- all against a `bars` table
+        with no index, where each of those was a full sequential scan.
+        """
+
+        query = """
+            SELECT timestamp, open, high, low, close, volume
+            FROM bars
+            WHERE symbol = ?
+              AND timeframe = ?
+            ORDER BY timestamp
+        """
+
+        frame = self.connection.execute(
+            query,
+            [self.data_symbol, self.source_timeframe],
+        ).fetchdf()
+
+        frame = frame.set_index(
+            pd.to_datetime(frame["timestamp"])
+        ).drop(columns=["timestamp"])
+
+        frame = normalize_columns(frame).sort_index()
+
+        for column in (
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ):
+            frame[column] = frame[column].astype(float)
+
+        return frame
+
     def _raw_bars_needed(
         self,
         bars: int,
@@ -260,30 +307,16 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
         bars: int,
     ) -> pd.DataFrame:
         """
-        Build a normal single-level OHLCV DataFrame from Atlas history,
-        resampled up to `bar_timeframe` if `source_timeframe` differs.
+        Build a normal single-level OHLCV DataFrame from the cached
+        history, resampled up to `bar_timeframe` if `source_timeframe`
+        differs.
         """
 
         raw_bars = self._raw_bars_needed(bars)
 
-        history = pd.DataFrame(
-            {
-                field: self.history(
-                    symbol=self.data_symbol,
-                    field=field,
-                    bars=raw_bars,
-                )
-                for field in (
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                )
-            }
-        )
-
-        history = normalize_columns(history).sort_index()
+        history = self._full_history.loc[
+            : self.get_current_timestamp()
+        ].tail(raw_bars)
 
         if not self.resampling:
             return history
@@ -293,6 +326,22 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
             self.bar_timeframe,
             source_timeframe=self.source_timeframe,
         ).tail(bars)
+
+    def _has_sufficient_history(
+        self,
+        bars: int,
+    ) -> bool:
+        """
+        In-memory equivalent of `DataInterface.has_history()`, checked
+        against the cached full history instead of a fresh DuckDB
+        COUNT(*) query.
+        """
+
+        available = self._full_history.loc[
+            : self.get_current_timestamp()
+        ]
+
+        return len(available) >= int(bars)
 
     # ========================================================
     # Futures accounting
@@ -863,11 +912,10 @@ class BaseFuturesStrategy(BaseStrategy, ABC):
 
         history_bars = self.required_history()
 
-        if not self.has_history(
-            symbol=self.data_symbol,
-            bars=self._raw_bars_needed(
+        if not self._has_sufficient_history(
+            self._raw_bars_needed(
                 history_bars
-            ),
+            )
         ):
             self._daily_event = (
                 "INSUFFICIENT_HISTORY"

@@ -135,6 +135,13 @@ def supertrend(
     direction:
          1 = bullish
         -1 = bearish
+
+    The recursive band/direction state is path-dependent, so it's built with
+    a loop rather than a vectorized rolling op -- same approach as
+    `parabolic_sar` below. The loop operates on plain numpy arrays (not
+    `pd.Series.iloc`), which avoids pandas' per-element indexing overhead;
+    that overhead dominates runtime when this is recomputed every bar over a
+    multi-year backtest.
     """
     frame = require_hlc(data)
     period = validate_period(period)
@@ -164,32 +171,15 @@ def supertrend(
         * average_true_range
     )
 
-    final_upper = pd.Series(
-        np.nan,
-        index=frame.index,
-        dtype=float,
-    )
+    count = len(frame)
 
-    final_lower = pd.Series(
-        np.nan,
-        index=frame.index,
-        dtype=float,
-    )
-
-    line = pd.Series(
-        np.nan,
-        index=frame.index,
-        dtype=float,
-    )
-
-    direction = pd.Series(
-        np.nan,
-        index=frame.index,
-        dtype=float,
-    )
+    final_upper = np.full(count, np.nan, dtype=float)
+    final_lower = np.full(count, np.nan, dtype=float)
+    line = np.full(count, np.nan, dtype=float)
+    direction = np.full(count, np.nan, dtype=float)
 
     valid_positions = np.flatnonzero(
-        average_true_range.notna()
+        average_true_range.notna().to_numpy()
     )
 
     if len(valid_positions) == 0:
@@ -204,50 +194,29 @@ def supertrend(
             index=frame.index,
         )
 
+    basic_upper_values = basic_upper.to_numpy(dtype=float)
+    basic_lower_values = basic_lower.to_numpy(dtype=float)
+    close_values = close.to_numpy(dtype=float)
+
     first = int(valid_positions[0])
 
-    final_upper.iloc[first] = (
-        basic_upper.iloc[first]
-    )
-
-    final_lower.iloc[first] = (
-        basic_lower.iloc[first]
-    )
-
-    direction.iloc[first] = 1.0
-    line.iloc[first] = (
-        final_lower.iloc[first]
-    )
+    final_upper[first] = basic_upper_values[first]
+    final_lower[first] = basic_lower_values[first]
+    direction[first] = 1.0
+    line[first] = final_lower[first]
 
     for index in range(
         first + 1,
-        len(frame),
+        count,
     ):
         previous = index - 1
 
-        current_basic_upper = (
-            basic_upper.iloc[index]
-        )
-
-        current_basic_lower = (
-            basic_lower.iloc[index]
-        )
-
-        previous_final_upper = (
-            final_upper.iloc[previous]
-        )
-
-        previous_final_lower = (
-            final_lower.iloc[previous]
-        )
-
-        previous_close = close.iloc[
-            previous
-        ]
-
-        current_close = close.iloc[
-            index
-        ]
+        current_basic_upper = basic_upper_values[index]
+        current_basic_lower = basic_lower_values[index]
+        previous_final_upper = final_upper[previous]
+        previous_final_lower = final_lower[previous]
+        previous_close = close_values[previous]
+        current_close = close_values[index]
 
         if (
             current_basic_upper
@@ -255,13 +224,9 @@ def supertrend(
             or previous_close
             > previous_final_upper
         ):
-            final_upper.iloc[index] = (
-                current_basic_upper
-            )
+            final_upper[index] = current_basic_upper
         else:
-            final_upper.iloc[index] = (
-                previous_final_upper
-            )
+            final_upper[index] = previous_final_upper
 
         if (
             current_basic_lower
@@ -269,29 +234,23 @@ def supertrend(
             or previous_close
             < previous_final_lower
         ):
-            final_lower.iloc[index] = (
-                current_basic_lower
-            )
+            final_lower[index] = current_basic_lower
         else:
-            final_lower.iloc[index] = (
-                previous_final_lower
-            )
+            final_lower[index] = previous_final_lower
 
-        previous_direction = (
-            direction.iloc[previous]
-        )
+        previous_direction = direction[previous]
 
         if (
             previous_direction == -1.0
             and current_close
-            > final_upper.iloc[index]
+            > final_upper[index]
         ):
             current_direction = 1.0
 
         elif (
             previous_direction == 1.0
             and current_close
-            < final_lower.iloc[index]
+            < final_lower[index]
         ):
             current_direction = -1.0
 
@@ -300,18 +259,12 @@ def supertrend(
                 previous_direction
             )
 
-        direction.iloc[index] = (
-            current_direction
-        )
+        direction[index] = current_direction
 
         if current_direction == 1.0:
-            line.iloc[index] = (
-                final_lower.iloc[index]
-            )
+            line[index] = final_lower[index]
         else:
-            line.iloc[index] = (
-                final_upper.iloc[index]
-            )
+            line[index] = final_upper[index]
 
     return pd.DataFrame(
         {
